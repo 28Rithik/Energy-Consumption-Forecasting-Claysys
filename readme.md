@@ -5,4 +5,4 @@ Description: Predict future energy usage based on historical consumption data us
 
 Suggested Dataset: Household Electric Power Consumption. 
 
-Tools: Prophet, Statsmodels, PyTorch
+Tools: Prophet, Statsmodels, PyTorch 
