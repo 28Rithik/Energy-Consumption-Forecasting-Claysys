@@ -1,2 +1,4 @@
 data
 venv
+models
+__pycache__
