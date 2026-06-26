@@ -4,12 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-import os
-import sys
-
-# Ensure src is in the path for module imports
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from src.inference import predict_custom_horizon
+from datetime import date
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config & simple light/clean theme
@@ -35,7 +30,7 @@ st.markdown("""
 [data-testid="stMetricValue"] {
     font-size: 1.8rem !important;
     font-weight: 600 !important;
-    color: #2563eb !important;
+    color: #000000 !important;
 }
 [data-testid="stMetricLabel"] {
     color: #555555 !important;
@@ -60,7 +55,7 @@ st.markdown("""
     padding: 0.5rem 1.2rem;
 }
 .stTabs [aria-selected="true"] {
-    background: #2563eb !important;
+    background: #000000 !important;
     color: white !important;
 }
 h1 { color: #222222 !important; }
@@ -72,7 +67,7 @@ h2, h3 { color: #333333 !important; }
 }
 [data-testid="stDataFrame"] { border-radius: 6px; overflow: hidden; }
 [data-testid="stDownloadButton"] > button {
-    background: #2563eb;
+    background: #000000;
     color: white;
     border: none;
     border-radius: 6px;
@@ -87,27 +82,26 @@ h2, h3 { color: #333333 !important; }
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
+TODAY = date.today().strftime("%d %b %Y")
+
 HORIZON_MAP = {
     "1 Day Ahead":   ("data/cleaned_hourly.csv", "1day",  "h", "hourly"),
     "10 Days Ahead": ("data/cleaned_daily.csv",  "10day", "D", "daily"),
     "1 Year Ahead":  ("data/cleaned_weekly.csv", "1year", "W", "weekly"),
-    "Custom":        (None, "custom", None, None)
 }
 
 MODEL_MAP = {
-    "SARIMAX":            "stats",
-    "Prophet":            "prophet",
-    "PyTorch LSTM":       "pytorch",
-    "XGBoost Ensemble":   "xgb",
-    "TFT Transformer":    "tft",
+    "SARIMAX":       "stats",
+    "Prophet":       "prophet",
+    "PyTorch LSTM":  "pytorch",
 }
 
 PALETTE = {
-    "hist":    "#2563eb",
-    "fc":      "#d97706",
-    "anomaly": "#dc2626",
-    "band":    "rgba(217,119,6,0.15)",
-    "grid":    "rgba(0,0,0,0.08)",
+    "hist":    "#000000",
+    "fc":      "#666666",
+    "anomaly": "#ff0000",
+    "band":    "rgba(0,0,0,0.1)",
+    "grid":    "rgba(0,0,0,0.05)",
 }
 
 PAPER_BG  = "rgba(255,255,255,0)"
@@ -136,14 +130,12 @@ def dark_layout(fig: go.Figure, title: str = "") -> go.Figure:
 
 
 def load_metrics_all(h_str: str) -> pd.DataFrame:
-    """Loads and combines validation metrics from all 5 models for one horizon."""
+    """Loads and combines validation metrics from SARIMAX, Prophet, and LSTM."""
     rows = []
     sources = [
-        ("SARIMAX",          "data/metrics_stats.csv"),
-        ("Prophet",          "data/metrics_prophet.csv"),
-        ("PyTorch LSTM",     "data/metrics_pytorch.csv"),
-        ("XGBoost Ensemble", "data/metrics_xgb.csv"),
-        ("TFT Transformer",  "data/metrics_tft.csv"),
+        ("SARIMAX",      "data/metrics_stats.csv"),
+        ("Prophet",      "data/metrics_prophet.csv"),
+        ("PyTorch LSTM", "data/metrics_pytorch.csv"),
     ]
     for name, path in sources:
         try:
@@ -234,7 +226,7 @@ def render_historical(df: pd.DataFrame, freq: str):
             pivot.T.values,
             x=[str(d)[:10] for d in pivot.index],
             y=[f"{h:02d}:00" for h in range(24)],
-            color_continuous_scale="Blues",
+            color_continuous_scale="gray",
             aspect="auto",
             labels=dict(color="kW"),
         )
@@ -245,7 +237,7 @@ def render_historical(df: pd.DataFrame, freq: str):
         fig_h = px.bar(
             x=hm_df.index.strftime("%b %Y"), y=hm_df.values,
             labels={"x": "Month", "y": "Avg Active Power (kW)"},
-            color_discrete_sequence=["#2563eb"]
+            color_discrete_sequence=["#000000"]
         )
         dark_layout(fig_h, "Monthly Average Active Power")
         st.plotly_chart(fig_h, use_container_width=True)
@@ -261,7 +253,7 @@ def render_submetering(df: pd.DataFrame):
     st.subheader("⚡ Sub-Metering Stacked Area")
     sm_tail = df[["Sub_metering_1", "Sub_metering_2", "Sub_metering_3"]].tail(500)
     fig_area = go.Figure()
-    colors = ["#2563eb", "#16a34a", "#d97706"]
+    colors = ["#222222", "#777777", "#bbbbbb"]
     labels = ["Kitchen (Sub 1)", "Laundry Room (Sub 2)", "AC & Water Heater (Sub 3)"]
     for col, color, label in zip(["Sub_metering_1", "Sub_metering_2", "Sub_metering_3"], colors, labels):
         fig_area.add_trace(go.Scatter(
@@ -288,7 +280,7 @@ def render_submetering(df: pd.DataFrame):
         fig_pie = go.Figure(go.Pie(
             labels=list(totals.keys()), values=list(totals.values()),
             hole=0.45, textinfo="label+percent",
-            marker=dict(colors=["#2563eb", "#16a34a", "#d97706", "#dc2626"],
+            marker=dict(colors=["#222222", "#777777", "#bbbbbb", "#eeeeee"],
                         line=dict(color="#ffffff", width=2))
         ))
         fig_pie.update_layout(
@@ -308,7 +300,7 @@ def render_submetering(df: pd.DataFrame):
         corr = df[corr_cols].corr()
         fig_corr = px.imshow(
             corr, text_auto=".2f",
-            color_continuous_scale="Blues",
+            color_continuous_scale="gray",
             zmin=-1, zmax=1,
             labels=dict(color="Corr"),
         )
@@ -327,25 +319,10 @@ def render_submetering(df: pd.DataFrame):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_forecast(hist_df: pd.DataFrame, model_name: str, horizon_name: str,
-                    m_str: str, h_str: str, rate_inr: float, custom_steps: int = None, custom_freq: str = None):
+                    m_str: str, h_str: str, rate_inr: float):
     """Renders confidence-band forecast chart, cost projection, metric table, download."""
 
-    # ── Load primary forecast ─────────────────────────────────────────────────
-    if horizon_name == "Custom":
-        feat_df = None
-        if m_str == 'xgb':
-            if custom_freq == 'hourly':
-                feat_df = pd.read_csv("data/features_hourly.csv", parse_dates=["Datetime"], index_col="Datetime")
-            elif custom_freq == 'daily':
-                feat_df = pd.read_csv("data/features_daily.csv", parse_dates=["Datetime"], index_col="Datetime")
-            else:
-                feat_df = pd.read_csv("data/features_weekly.csv", parse_dates=["Datetime"], index_col="Datetime")
-        
-        with st.spinner(f"Generating dynamic {custom_steps} {custom_freq} forecast using {model_name}..."):
-            primary_fc = predict_custom_horizon(m_str, custom_freq, custom_steps, hist_df, feat_df)
-    else:
-        primary_fc = load_forecast(m_str, h_str)
-        
+    primary_fc  = load_forecast(m_str, h_str)
     recent_hist = hist_df[["Global_active_power"]].tail(100)
 
     fig = go.Figure()
@@ -376,7 +353,7 @@ def render_forecast(hist_df: pd.DataFrame, model_name: str, horizon_name: str,
         line=dict(color=PALETTE["fc"], width=2.5, dash="dash")
     ))
 
-    dark_layout(fig, f"Forecast Projection — {model_name} ({horizon_name})")
+    dark_layout(fig, f"Forecast Projection — {model_name} ({horizon_name})  |  Generated: {TODAY}")
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Cost projection table ─────────────────────────────────────────────────
@@ -386,7 +363,7 @@ def render_forecast(hist_df: pd.DataFrame, model_name: str, horizon_name: str,
     cost_df[f"Cost (₹ @ ₹{rate_inr}/kWh)"] = (cost_df["Est. kWh"] * rate_inr).round(2)
     cost_df = cost_df.rename(columns={"Global_active_power": "Forecast kW"})
     st.dataframe(cost_df.style.background_gradient(
-        subset=["Forecast kW"], cmap="Blues"), use_container_width=True)
+        subset=["Forecast kW"], cmap="gray"), use_container_width=True)
 
     # ── Model metrics comparison ──────────────────────────────────────────────
     st.subheader("📐 All-Model Validation Metrics Comparison")
@@ -439,36 +416,23 @@ if __name__ == "__main__":
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 💡 Energy Cost Settings")
-    rate_inr = st.sidebar.number_input("Electricity Rate (₹ per kWh)", min_value=0.1,
-                                        max_value=50.0, value=8.0, step=0.5)
+    rate_inr = st.sidebar.number_input(
+        "Electricity Rate (INR per kWh)",
+        min_value=0.1, max_value=50.0, value=8.0, step=0.5
+    )
 
-    # ── Load data based on horizon selection ──────────────────────────────────
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📁 Dataset Info")
+    st.sidebar.caption("Source: UCI Household Power Consumption")
+    st.sidebar.caption("2,075,259 minute-level records · 47 months")
+    st.sidebar.caption("Models: SARIMAX · Prophet · BiLSTM+Attention")
+
+    # ── Load data ──────────────────────────────────────────────────────────────
     h_file, h_str, freq, freq_name = HORIZON_MAP[horizon]
     m_str = MODEL_MAP[model]
-    
-    custom_steps = None
-    custom_freq = None
-    
-    if horizon == "Custom":
-        st.sidebar.markdown("### 🛠️ Custom Prediction")
-        custom_steps = st.sidebar.number_input("Duration (steps)", min_value=1, max_value=1000, value=10)
-        unit = st.sidebar.selectbox("Unit", ["Hours", "Days", "Weeks"])
-        if unit == "Hours":
-            custom_freq = "hourly"
-            h_file = "data/cleaned_hourly.csv"
-            freq = "h"
-        elif unit == "Days":
-            custom_freq = "daily"
-            h_file = "data/cleaned_daily.csv"
-            freq = "D"
-        else:
-            custom_freq = "weekly"
-            h_file = "data/cleaned_weekly.csv"
-            freq = "W"
-            
     hist_df = pd.read_csv(h_file, parse_dates=["Datetime"], index_col="Datetime")
 
-    # ── Tabs ──────────────────────────────────────────────────────────────────
+    # ── Tabs ───────────────────────────────────────────────────────────────────
     tab1, tab2, tab3 = st.tabs([
         "📈 Historical Insights",
         "🔌 Sub-Metering Breakdown",
@@ -480,4 +444,4 @@ if __name__ == "__main__":
     with tab2:
         render_submetering(hist_df)
     with tab3:
-        render_forecast(hist_df, model, horizon, m_str, h_str, rate_inr, custom_steps, custom_freq)
+        render_forecast(hist_df, model, horizon, m_str, h_str, rate_inr)

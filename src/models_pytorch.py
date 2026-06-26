@@ -5,139 +5,196 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
+
 class TimeSeriesDataset(Dataset):
-    """Custom PyTorch Dataset for building sliding sequence window slices."""
+    """Sliding-window dataset for LSTM training."""
+
     def __init__(self, data: np.ndarray, seq_len: int):
-        self.data = torch.tensor(data, dtype=torch.float32).unsqueeze(-1)
+        self.data = torch.tensor(data, dtype=torch.float32)
         self.seq_len = seq_len
 
     def __len__(self) -> int:
         return len(self.data) - self.seq_len
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        x = self.data[idx : idx + self.seq_len]
-        y = self.data[idx + self.seq_len]
+    def __getitem__(self, idx: int):
+        x = self.data[idx : idx + self.seq_len].unsqueeze(-1)  # (T, 1)
+        y = self.data[idx + self.seq_len]                       # scalar
         return x, y
 
-class LSTMRegressor(nn.Module):
-    """LSTM regressor model with a single hidden LSTM layer followed by a linear mapping."""
-    def __init__(self, input_size: int = 1, hidden_size: int = 16, num_layers: int = 1):
-        super(LSTMRegressor, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.linear = nn.Linear(hidden_size, 1)
+
+class AttentionLayer(nn.Module):
+    """
+    Scaled-dot-product temporal attention.
+    Weights each timestep of the LSTM output and produces a context vector.
+    """
+
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.attn = nn.Linear(hidden_size * 2, 1)
+
+    def forward(self, lstm_out: torch.Tensor) -> torch.Tensor:
+        """lstm_out: (B, T, H*2)  ->  context: (B, H*2)"""
+        scores  = self.attn(lstm_out)               # (B, T, 1)
+        weights = torch.softmax(scores, dim=1)       # (B, T, 1)
+        context = (weights * lstm_out).sum(dim=1)   # (B, H*2)
+        return context
+
+
+class PowerfulLSTMRegressor(nn.Module):
+    """
+    Advanced LSTM Regressor with:
+      - 2-layer Bidirectional LSTM  (captures both past and future context)
+      - Temporal self-attention     (focuses on the most informative timesteps)
+      - LayerNorm                   (stabilises training)
+      - 2-layer MLP decoder with GELU activation + Dropout
+    """
+
+    def __init__(self, input_size: int = 1, hidden_size: int = 64,
+                 num_layers: int = 2, dropout: float = 0.2):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.attention = AttentionLayer(hidden_size)
+        self.norm      = nn.LayerNorm(hidden_size * 2)
+        self.dropout   = nn.Dropout(dropout)
+        self.fc1       = nn.Linear(hidden_size * 2, hidden_size)
+        self.act       = nn.GELU()
+        self.fc2       = nn.Linear(hidden_size, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        lstm_out, _ = self.lstm(x)
-        out = self.linear(lstm_out[:, -1, :])
-        return out
+        lstm_out, _ = self.lstm(x)            # (B, T, H*2)
+        context     = self.attention(lstm_out) # (B, H*2)
+        context     = self.norm(context)
+        context     = self.dropout(context)
+        out = self.act(self.fc1(context))      # (B, H)
+        out = self.dropout(out)
+        return self.fc2(out)                   # (B, 1)
 
-def train_lstm(model: nn.Module, data: np.ndarray, seq_len: int, epochs: int = 5, lr: float = 0.01) -> nn.Module:
-    """Trains the LSTM Regressor using MSE Loss and the Adam Optimizer."""
-    dataset = TimeSeriesDataset(data, seq_len)
-    dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
-    
+
+def train_model(model: nn.Module, data: np.ndarray, seq_len: int,
+                epochs: int = 20, lr: float = 5e-3,
+                batch_size: int = 256) -> nn.Module:
+    """
+    Trains the model using:
+      - MSELoss
+      - Adam with weight decay
+      - CosineAnnealingLR scheduling
+      - Gradient norm clipping
+    """
+    dataset   = TimeSeriesDataset(data, seq_len)
+    loader    = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
     model.train()
     for epoch in range(epochs):
-        for batch_x, batch_y in dataloader:
+        epoch_loss = 0.0
+        for batch_x, batch_y in loader:
             optimizer.zero_grad()
-            preds = model(batch_x)
-            loss = criterion(preds, batch_y)
+            preds = model(batch_x).squeeze(-1)
+            loss  = criterion(preds, batch_y)
             loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+            epoch_loss += loss.item()
+        scheduler.step()
+        if (epoch + 1) % 5 == 0:
+            avg = epoch_loss / len(loader)
+            print(f"  Epoch {epoch+1:02d}/{epochs}  loss={avg:.6f}")
     return model
 
-def forecast_autoregressive(model: nn.Module, seed_seq: list, seq_len: int, steps: int) -> list:
-    """Performs autoregressive forecast loop projecting predictions step-by-step."""
+
+def forecast_autoregressive(model: nn.Module, seed: list,
+                             seq_len: int, steps: int) -> list:
+    """Generates future predictions step-by-step (closed-loop autoregressive)."""
     model.eval()
-    curr_seq = list(seed_seq)
-    predictions = []
-    
-    for _ in range(steps):
-        input_tensor = torch.tensor(curr_seq, dtype=torch.float32).view(1, seq_len, 1)
-        with torch.no_grad():
-            pred = model(input_tensor).item()
-        predictions.append(pred)
-        curr_seq.append(pred)
-        curr_seq.pop(0)
-    return predictions
+    cur: list = list(seed)
+    preds: list = []
+    with torch.no_grad():
+        for _ in range(steps):
+            inp = torch.tensor(cur[-seq_len:], dtype=torch.float32).view(1, seq_len, 1)
+            p   = model(inp).item()
+            preds.append(p)
+            cur.append(p)
+    return preds
+
+
+def run_horizon(clean_file: str, seq_len: int, steps: int,
+                freq: str, name: str,
+                train_tail: int = None) -> tuple:
+    """
+    Full pipeline for one horizon:
+      load -> scale -> validate -> retrain-full -> forecast -> inverse-scale.
+    Returns (forecast_df, mae, rmse).
+    """
+    df   = pd.read_csv(clean_file, parse_dates=['Datetime'], index_col='Datetime')
+    vals = df['Global_active_power'].values.astype(np.float32)
+    if train_tail:
+        vals = vals[-train_tail:]
+
+    v_min, v_max = vals.min(), vals.max()
+    scaled = (vals - v_min) / (v_max - v_min + 1e-8)
+
+    # Validation split
+    train_sc = scaled[:-steps]
+    val_sc   = scaled[-steps:]
+
+    val_model = PowerfulLSTMRegressor()
+    val_model = train_model(val_model, train_sc, seq_len)
+
+    val_preds_sc  = np.array(forecast_autoregressive(val_model, list(train_sc[-seq_len:]), seq_len, steps))
+    val_preds_kw  = val_preds_sc * (v_max - v_min) + v_min
+    val_true_kw   = val_sc       * (v_max - v_min) + v_min
+    mae  = float(np.mean(np.abs(val_preds_kw  - val_true_kw)))
+    rmse = float(np.sqrt(np.mean((val_preds_kw - val_true_kw) ** 2)))
+
+    # Retrain on full series for final forecast
+    full_model = PowerfulLSTMRegressor()
+    full_model = train_model(full_model, scaled, seq_len)
+
+    fc_sc  = np.array(forecast_autoregressive(full_model, list(scaled[-seq_len:]), seq_len, steps))
+    fc_kw  = fc_sc * (v_max - v_min) + v_min
+
+    last_dt = df.index[-1]
+    if freq == 'h':
+        future_dts = pd.date_range(start=last_dt + pd.Timedelta(hours=1), periods=steps, freq='h')
+    elif freq == 'D':
+        future_dts = pd.date_range(start=last_dt + pd.Timedelta(days=1),  periods=steps, freq='D')
+    else:
+        future_dts = pd.date_range(start=last_dt + pd.Timedelta(weeks=1), periods=steps, freq='W')
+
+    fc_df = pd.DataFrame({'Datetime': future_dts, 'Global_active_power': fc_kw})
+    return fc_df, mae, rmse
+
 
 if __name__ == '__main__':
-    # Load processed data
-    h_df = pd.read_csv('data/cleaned_hourly.csv', parse_dates=['Datetime'])
-    d_df = pd.read_csv('data/cleaned_daily.csv', parse_dates=['Datetime'])
-    w_df = pd.read_csv('data/cleaned_weekly.csv', parse_dates=['Datetime'])
-    
-    horizons_configs = [
-        {'name': '1day', 'df': h_df, 'seq_len': 24, 'steps': 24, 'freq': 'h', 'train_tail': 2000, 'save_name': 'hourly'},
-        {'name': '10day', 'df': d_df, 'seq_len': 30, 'steps': 10, 'freq': 'D', 'train_tail': 1000, 'save_name': 'daily'},
-        {'name': '1year', 'df': w_df, 'seq_len': 10, 'steps': 52, 'freq': 'W', 'train_tail': None, 'save_name': 'weekly'}
-    ]
-    
+    os.makedirs('data', exist_ok=True)
     metrics = []
-    
-    for config in horizons_configs:
-        df = config['df']
-        seq_len = config['seq_len']
-        steps = config['steps']
-        freq = config['freq']
-        
-        # Filter training slice for hourly/daily to speed up
-        if config['train_tail']:
-            df_slice = df.tail(config['train_tail'])
-        else:
-            df_slice = df
-            
-        vals = df_slice['Global_active_power'].values
-        min_val = vals.min()
-        max_val = vals.max()
-        scaled = (vals - min_val) / (max_val - min_val + 1e-8)
-        
-        # 1. Validation Split Evaluation
-        # We hold out the last 'steps' data points for validation
-        train_scaled = scaled[:-steps]
-        val_scaled = scaled[-steps:]
-        
-        val_model = LSTMRegressor()
-        val_model = train_lstm(val_model, train_scaled, seq_len)
-        
-        # Seed sequence is the last segment of the training scaled sequence
-        seed_seq_val = train_scaled[-seq_len:]
-        val_preds_scaled = forecast_autoregressive(val_model, seed_seq_val, seq_len, steps)
-        val_preds = [p * (max_val - min_val) + min_val for p in val_preds_scaled]
-        val_targets = df_slice['Global_active_power'].values[-steps:]
-        
-        mae = np.mean(np.abs(np.array(val_preds) - val_targets))
-        rmse = np.sqrt(np.mean((np.array(val_preds) - val_targets) ** 2))
-        metrics.append({'Horizon': config['name'], 'MAE': float(mae), 'RMSE': float(rmse)})
-        
-        # 2. Train on full series and forecast future
-        full_model = LSTMRegressor()
-        full_model = train_lstm(full_model, scaled, seq_len)
-        
-        seed_seq_full = scaled[-seq_len:]
-        fc_preds_scaled = forecast_autoregressive(full_model, seed_seq_full, seq_len, steps)
-        fc_preds = [p * (max_val - min_val) + min_val for p in fc_preds_scaled]
-        
-        # Datetime construction
-        last_dt = pd.to_datetime(df['Datetime'].iloc[-1])
-        if freq == 'h':
-            future_dts = pd.date_range(start=last_dt + pd.Timedelta(hours=1), periods=steps, freq='h')
-        elif freq == 'D':
-            future_dts = pd.date_range(start=last_dt + pd.Timedelta(days=1), periods=steps, freq='D')
-        else:
-            future_dts = pd.date_range(start=last_dt + pd.Timedelta(weeks=1), periods=steps, freq='W')
-            
-        fc_out = pd.DataFrame({'Datetime': future_dts, 'Global_active_power': fc_preds})
-        fc_out.to_csv(f'data/forecast_pytorch_{config["name"]}.csv', index=False)
-        
-        torch.save({
-            'state_dict': full_model.state_dict(),
-            'seq_len': seq_len,
-            'min_val': min_val,
-            'max_val': max_val
-        }, f'models/pytorch_{config["save_name"]}.pt')
-        
+
+    print("=== 1-Day  (hourly, seq=48) ===")
+    h_fc, h_mae, h_rmse = run_horizon('data/cleaned_hourly.csv', seq_len=48, steps=24, freq='h', name='1day', train_tail=5000)
+    h_fc.to_csv('data/forecast_pytorch_1day.csv', index=False)
+    metrics.append({'Horizon': '1day',  'MAE': h_mae, 'RMSE': h_rmse})
+    print(f"  -> MAE={h_mae:.4f}  RMSE={h_rmse:.4f}\n")
+
+    print("=== 10-Day (daily,  seq=60) ===")
+    d_fc, d_mae, d_rmse = run_horizon('data/cleaned_daily.csv',  seq_len=60, steps=10, freq='D', name='10day')
+    d_fc.to_csv('data/forecast_pytorch_10day.csv', index=False)
+    metrics.append({'Horizon': '10day', 'MAE': d_mae, 'RMSE': d_rmse})
+    print(f"  -> MAE={d_mae:.4f}  RMSE={d_rmse:.4f}\n")
+
+    print("=== 1-Year (weekly, seq=26) ===")
+    w_fc, w_mae, w_rmse = run_horizon('data/cleaned_weekly.csv', seq_len=26, steps=52, freq='W', name='1year')
+    w_fc.to_csv('data/forecast_pytorch_1year.csv', index=False)
+    metrics.append({'Horizon': '1year', 'MAE': w_mae, 'RMSE': w_rmse})
+    print(f"  -> MAE={w_mae:.4f}  RMSE={w_rmse:.4f}\n")
+
     pd.DataFrame(metrics).to_csv('data/metrics_pytorch.csv', index=False)
+    print("All improved LSTM forecasts saved.")
