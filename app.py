@@ -11,7 +11,7 @@ from datetime import date
 # ─────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Smart Home Energy Dashboard",
+    page_title="Smart Home Energy Dashboard - Energy Consumption Forecasting",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -195,7 +195,7 @@ def render_historical(df: pd.DataFrame, freq: str):
             marker=dict(color=PALETTE["anomaly"], size=7, symbol="circle")
         ))
     dark_layout(fig, "Active Power History with Z-Score Anomalies")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # ── Candlestick-style daily range chart (only for hourly data) ────────────
     if freq == "h":
@@ -212,7 +212,7 @@ def render_historical(df: pd.DataFrame, freq: str):
             name="Daily Range"
         ))
         dark_layout(fig_c, "Daily Active Power: Open / High / Low / Close")
-        st.plotly_chart(fig_c, use_container_width=True)
+        st.plotly_chart(fig_c, width="stretch")
 
     # ── Consumption heatmap calendar ──────────────────────────────────────────
     st.subheader("🗓️ Hourly Consumption Heatmap Calendar")
@@ -231,7 +231,7 @@ def render_historical(df: pd.DataFrame, freq: str):
             labels=dict(color="kW"),
         )
         dark_layout(fig_h, "Hour-of-Day × Date Heatmap (Active Power)")
-        st.plotly_chart(fig_h, use_container_width=True)
+        st.plotly_chart(fig_h, width="stretch")
     else:
         hm_df = df["Global_active_power"].resample("ME").mean()
         fig_h = px.bar(
@@ -240,7 +240,7 @@ def render_historical(df: pd.DataFrame, freq: str):
             color_discrete_sequence=["#000000"]
         )
         dark_layout(fig_h, "Monthly Average Active Power")
-        st.plotly_chart(fig_h, use_container_width=True)
+        st.plotly_chart(fig_h, width="stretch")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -264,7 +264,7 @@ def render_submetering(df: pd.DataFrame):
             fillcolor="rgba(0,0,0,0.08)"
         ))
     dark_layout(fig_area, "Sub-Metering Breakdown Over Time")
-    st.plotly_chart(fig_area, use_container_width=True)
+    st.plotly_chart(fig_area, width="stretch")
 
     # ── Donut breakdown ───────────────────────────────────────────────────────
     col_l, col_r = st.columns(2)
@@ -291,7 +291,7 @@ def render_submetering(df: pd.DataFrame):
             showlegend=True,
             legend=dict(bgcolor="rgba(255,255,255,0.8)")
         )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
 
     # ── Feature correlation heatmap ───────────────────────────────────────────
     with col_r:
@@ -311,7 +311,7 @@ def render_submetering(df: pd.DataFrame):
             margin=dict(l=10, r=10, t=50, b=10),
             coloraxis_colorbar=dict(tickfont=dict(color="#555555"))
         )
-        st.plotly_chart(fig_corr, use_container_width=True)
+        st.plotly_chart(fig_corr, width="stretch")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -354,7 +354,7 @@ def render_forecast(hist_df: pd.DataFrame, model_name: str, horizon_name: str,
     ))
 
     dark_layout(fig, f"Forecast Projection — {model_name} ({horizon_name})  |  Generated: {TODAY}")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # ── Cost projection table ─────────────────────────────────────────────────
     st.subheader("💰 Forecasted Energy Cost Projection")
@@ -363,7 +363,7 @@ def render_forecast(hist_df: pd.DataFrame, model_name: str, horizon_name: str,
     cost_df[f"Cost (₹ @ ₹{rate_inr}/kWh)"] = (cost_df["Est. kWh"] * rate_inr).round(2)
     cost_df = cost_df.rename(columns={"Global_active_power": "Forecast kW"})
     st.dataframe(cost_df.style.background_gradient(
-        subset=["Forecast kW"], cmap="gray"), use_container_width=True)
+        subset=["Forecast kW"], cmap="gray"), width="stretch")
 
     # ── Model metrics comparison ──────────────────────────────────────────────
     st.subheader("📐 All-Model Validation Metrics Comparison")
@@ -374,7 +374,7 @@ def render_forecast(hist_df: pd.DataFrame, model_name: str, horizon_name: str,
             .highlight_min(subset=["MAE (kW)", "RMSE (kW)"], color="#dcfce7") \
             .highlight_max(subset=["MAE (kW)", "RMSE (kW)"], color="#fee2e2") \
             .set_properties(**{"color": "#222222", "background-color": "#ffffff"})
-        st.dataframe(styled, use_container_width=True)
+        st.dataframe(styled, width="stretch")
 
     # ── Download button ───────────────────────────────────────────────────────
     csv_bytes = cost_df.to_csv().encode("utf-8")
